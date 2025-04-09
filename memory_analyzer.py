@@ -1,12 +1,12 @@
 import functools
 from utils import get_shape, get_dtype_size
 
-def analyze_memory_usage(node, initializers, value_info_map, input_shapes, value_info_shapes):
+def analyze_memory_usage(node, initializers, tensor_shapes):
     mem_size = 0
     for out in node.output:
-        shape = eval(get_shape(out, input_shapes, value_info_shapes)) if get_shape(out, input_shapes, value_info_shapes) != "unknown" else []
+        shape = tensor_shapes.get(out, [])
         if shape:
-            size = get_dtype_size(out, value_info_map) * max(1, functools.reduce(lambda a,b: a*b, shape, 1))
+            size = 4 * max(1, functools.reduce(lambda a,b: a*b, shape, 1))  # Assume float32 (4 bytes)
             mem_size += size
     return mem_size
 

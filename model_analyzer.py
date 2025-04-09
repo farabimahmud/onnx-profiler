@@ -1,10 +1,23 @@
 import onnx
 import onnx.shape_inference
-from utils import logger, get_shape
-from flops_calculator import estimate_flops
+from utils import get_shape
+from flops_calculator import estimate_flops, DEFAULT_BASELINE, get_tensor_shapes
 from memory_analyzer import analyze_memory_usage, analyze_parameters
+import logging
 
-def analyze_model(model_path):
+logger = logging.getLogger(__name__)
+
+def analyze_model(model_path, baseline_dtype=DEFAULT_BASELINE):
+    """Analyze an ONNX model and compute various metrics.
+    
+    Args:
+        model_path: Path to the ONNX model file
+        baseline_dtype: The data type to use as baseline for FLOPs calculation
+                       (default: float32)
+    
+    Returns:
+        tuple: (summary, total_flops, total_memory, total_params, ir_version)
+    """
     model = onnx.load(model_path)
     try:
         model = onnx.shape_inference.infer_shapes(model)
@@ -12,17 +25,14 @@ def analyze_model(model_path):
     except Exception as e:
         logger.warning(f"Shape inference failed: {e}")
 
+    # Get tensor shapes from ONNX Runtime
+    tensor_shapes = get_tensor_shapes(model_path)
+    logger.info("Got tensor shapes from ONNX Runtime")
+
     graph = model.graph
     nodes = graph.node
     initializers = {init.name: init for init in graph.initializer}
     
-    input_shapes = {i.name: [d.dim_value for d in i.type.tensor_type.shape.dim] for i in graph.input}
-    value_info_map = {vi.name: vi for vi in list(graph.value_info) + list(graph.output) + list(graph.input)}
-    value_info_shapes = {
-        vi.name: [d.dim_value for d in vi.type.tensor_type.shape.dim]
-        for vi in value_info_map.values()
-    }
-
     summary = []
     total_flops = 0
     total_memory = 0
@@ -31,21 +41,34 @@ def analyze_model(model_path):
 
     for node in nodes:
         is_quant = any(qop in node.op_type for qop in ["QuantizeLinear", "DequantizeLinear", "QLinearConv", "QLinearMatMul"])
-        flops, supported = estimate_flops(node, input_shapes, value_info_shapes)
+        flops, supported = estimate_flops(node, tensor_shapes, baseline_dtype)
         if not supported:
             unsupported_count += 1
         total_flops += flops
 
-        mem_size = analyze_memory_usage(node, initializers, value_info_map, input_shapes, value_info_shapes)
+        mem_size = analyze_memory_usage(node, initializers, tensor_shapes)
         total_memory += mem_size
 
         param_count = analyze_parameters(node, initializers)
         total_params += param_count
 
-        input_dims = [get_shape(inp, input_shapes, value_info_shapes) for inp in node.input if get_shape(inp, input_shapes, value_info_shapes) != "unknown"]
-        output_dims = [get_shape(out, input_shapes, value_info_shapes) for out in node.output if get_shape(out, input_shapes, value_info_shapes) != "unknown"]
-        input_shape = input_dims[0] if input_dims and all(s == input_dims[0] for s in input_dims) else "varied"
-        output_shape = output_dims[0] if output_dims and all(s == output_dims[0] for s in output_dims) else "varied"
+        # Get input shapes from ONNX Runtime
+        input_shapes = []
+        for inp in node.input:
+            if inp in tensor_shapes:
+                input_shapes.append(tensor_shapes[inp])
+        
+        # Get output shapes from ONNX Runtime
+        output_shapes = []
+        for out in node.output:
+            if out in tensor_shapes:
+                output_shapes.append(tensor_shapes[out])
+
+        # For input shape, use the first non-empty shape if available
+        input_shape = str(input_shapes[0]) if input_shapes else "unknown"
+        
+        # For output shape, use the first non-empty shape if available
+        output_shape = str(output_shapes[0]) if output_shapes else "unknown"
 
         flops_pct = (flops / total_flops * 100) if total_flops > 0 else 0
         mem_pct = (mem_size / total_memory * 100) if total_memory > 0 else 0

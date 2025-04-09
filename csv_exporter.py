@@ -1,6 +1,8 @@
 import csv
 from collections import defaultdict
-from utils import logger
+import logging
+
+logger = logging.getLogger(__name__)
 
 def export_to_csv(summary, output_csv, aggr=False, total_flops=0, total_memory=0, total_params=0):
     with open(output_csv, 'w', newline='') as f:
